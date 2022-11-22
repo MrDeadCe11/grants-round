@@ -1,56 +1,83 @@
 import { useBallot } from "../context/BallotContext";
-import { FinalBallotDonation, PayoutToken, Project } from "./api/types";
+import {
+  FinalBallotDonation,
+  PayoutToken,
+  ProgressStatus,
+  Project,
+  recipient,
+} from "./api/types";
 import { useRoundById } from "../context/RoundContext";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import Navbar from "./common/Navbar";
 import DefaultLogoImage from "../assets/default_logo.png";
-import { CheckIcon, ChevronLeftIcon, SelectorIcon, InformationCircleIcon } from "@heroicons/react/solid";
+import {
+  CheckIcon,
+  ChevronLeftIcon,
+  SelectorIcon,
+  InformationCircleIcon,
+  EyeIcon
+} from "@heroicons/react/solid";
 import { ArrowCircleLeftIcon, TrashIcon } from "@heroicons/react/outline";
 import { Button, Input } from "./common/styles";
-import React, { Fragment, useEffect, useState } from "react";
 import { classNames, getPayoutTokenOptions } from "./api/utils";
 import { Listbox, Transition } from "@headlessui/react";
+import React, { Fragment, useEffect, useMemo, useState } from "react";
 import { useAccount, useBalance } from "wagmi";
 import { BigNumber, ethers } from "ethers";
 import ConfirmationModal from "./common/ConfirmationModal";
 import InfoModal from "./common/InfoModal";
 import Footer from "./common/Footer";
+import ProgressModal from "./common/ProgressModal";
+import ErrorModal from "./common/ErrorModal";
+import { modalDelayMs } from "../constants";
+import { useQFDonation } from "../context/QFDonationContext";
+import { datadogLogs } from "@datadog/browser-logs";
+import { useConnectModal } from "@rainbow-me/rainbowkit";
 
 export default function ViewBallot() {
-
   const { chainId, roundId } = useParams();
+
+  // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+  const { round } = useRoundById(chainId!, roundId!);
 
   const payoutTokenOptions: PayoutToken[] = [
     // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
     ...getPayoutTokenOptions(chainId!),
   ];
 
-  const [selectedPayoutToken, setSelectedPayoutToken] = useState<PayoutToken>(payoutTokenOptions[0]);
-
-  // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-  useRoundById(chainId!, roundId!);
-
+  const [selectedPayoutToken, setSelectedPayoutToken] = useState<PayoutToken>(
+    payoutTokenOptions[0]
+  );
   const [shortlistSelect, setShortlistSelect] = useState(false);
   const [selected, setSelected] = useState<Project[]>([]);
   const [donations, setDonations] = useState<FinalBallotDonation[]>([]);
-  const [totalDonation, setTotalDonation] = useState(0);
+
+  const totalDonation = useMemo(() => {
+    return donations.reduce((sum, donation) => sum + donation.amount, 0);
+  }, [donations]);
+
+  const [fixedDonation, setFixedDonation] = useState<number>();
   const [openConfirmationModal, setOpenConfirmationModal] = useState(false);
   const [openInfoModal, setOpenInfoModal] = useState(false);
-
+  const [openProgressModal, setOpenProgressModal] = useState(false);
+  const [openErrorModal, setOpenErrorModal] = useState(false);
 
   const [shortlist, finalBallot, , , ,] = useBallot();
 
+  const { openConnectModal } = useConnectModal();
+
   const { address } = useAccount();
 
-  const tokenDetail = selectedPayoutToken.address == ethers.constants.AddressZero
-  ? { addressOrName: address }
-  : { addressOrName: address, token: selectedPayoutToken.address}
+  const tokenDetail =
+    selectedPayoutToken.address == ethers.constants.AddressZero
+      ? { addressOrName: address }
+      : { addressOrName: address, token: selectedPayoutToken.address };
 
   const selectedPayoutTokenBalance = useBalance(tokenDetail);
 
-  const [ donationError, setDonationError] = useState({
+  const [donationError, setDonationError] = useState({
     emptyInput: false,
-    insufficientBalance: false
+    insufficientBalance: false,
   });
 
   const shortlistNotEmpty = shortlist.length > 0;
@@ -62,53 +89,108 @@ export default function ViewBallot() {
     }
   }, [shortlistSelect]);
 
+  const navigate = useNavigate();
+
+  const { submitDonations, tokenApprovalStatus, voteStatus, indexingStatus } =
+    useQFDonation();
+
+  useEffect(() => {
+    if (
+      tokenApprovalStatus === ProgressStatus.IS_ERROR ||
+      voteStatus === ProgressStatus.IS_ERROR
+    ) {
+      setTimeout(() => {
+        setOpenProgressModal(false);
+        setOpenErrorModal(true);
+      }, modalDelayMs);
+    }
+
+    if (indexingStatus === ProgressStatus.IS_ERROR) {
+      setTimeout(() => {
+        navigate(`/round/${chainId}/${roundId}`);
+      }, 5000);
+    }
+  }, [navigate, tokenApprovalStatus, voteStatus, indexingStatus, chainId, roundId]);
+
+  const progressSteps = [
+    {
+      name: "Approve",
+      description: "Approve the contract to access your wallet",
+      status: tokenApprovalStatus,
+    },
+    {
+      name: "Submit",
+      description: "Finalize your contribution",
+      status: voteStatus,
+    },
+    {
+      name: "Indexing",
+      description: "The subgraph is indexing the data.",
+      status: indexingStatus,
+    },
+    {
+      name: "Redirecting",
+      description: "Just another moment while we finish things up.",
+      status:
+        indexingStatus === ProgressStatus.IS_SUCCESS
+          ? ProgressStatus.IN_PROGRESS
+          : ProgressStatus.NOT_STARTED,
+    },
+  ];
+
   return (
-      <>
-        <Navbar roundUrlPath={`/round/${chainId}/${roundId}`}/>
+    <>
+      <Navbar roundUrlPath={`/round/${chainId}/${roundId}`} />
 
-        <div className="mx-20 h-screen px-4 py-7">
-          {Header(chainId, roundId)}
+      <div className="mx-20 h-screen px-4 py-7">
+        {Header(chainId, roundId)}
 
-          <div className="grid grid-cols-2 gap-4">
-            {shortlistNotEmpty && ShortlistProjects(shortlist)}
-            {!shortlistNotEmpty && EmptyShortlist(chainId, roundId)}
+        <div className="grid grid-cols-2 gap-4">
+          {shortlistNotEmpty && ShortlistProjects(shortlist)}
+          {!shortlistNotEmpty && EmptyShortlist(chainId, roundId)}
 
-            {finalBallotNotEmpty && FinalBallotProjects(finalBallot)}
-            {!finalBallotNotEmpty && EmptyFinalBallot()}
-          </div>
-          <div className="grid grid-cols-2 gap-4">
-            <div></div>
-            <div>
-              <Summary/>
-              <Button
-                  $variant="solid"
-                  data-testid="handle-confirmation"
-                  type="button"
-                  onClick={handleConfirmation}
-                  className="items-center shadow-sm text-sm rounded w-full"
-              >
-                Submit your donation!
-              </Button>
-              {donationError.emptyInput &&
-                  <p data-testid="emptyInput"
-                     className="rounded-md bg-red-50 py-2 text-pink-500 flex justify-center my-4 text-sm">
-                    <InformationCircleIcon className="w-4 h-4 mr-1 mt-0.5"/>
-                    <span>You must enter donations for all final ballot projects</span>
-                  </p>
-              }
-              {donationError.insufficientBalance &&
-                  <p data-testid="insufficientBalance"
-                     className="rounded-md bg-red-50 py-2 text-pink-500 flex justify-center my-4 text-sm">
-                    <InformationCircleIcon className="w-4 h-4 mr-1 mt-0.5"/>
-                    <span>You do not have enough funds for these donations</span>
-                  </p>
-              }
-            </div>
-            <PayoutModals/>
-          </div>
-          <Footer/>
+          {finalBallotNotEmpty && FinalBallotProjects(finalBallot)}
+          {!finalBallotNotEmpty && EmptyFinalBallot()}
         </div>
-      </>
+        <div className="grid grid-cols-2 gap-4">
+          <div></div>
+          <div>
+            <Summary />
+            <Button
+              $variant="solid"
+              data-testid="handle-confirmation"
+              type="button"
+              onClick={handleConfirmation}
+              className="items-center shadow-sm text-sm rounded w-full"
+            >
+              Submit your donation!
+            </Button>
+            {donationError.emptyInput && (
+              <p
+                data-testid="emptyInput"
+                className="rounded-md bg-red-50 py-2 text-pink-500 flex justify-center my-4 text-sm"
+              >
+                <InformationCircleIcon className="w-4 h-4 mr-1 mt-0.5" />
+                <span>
+                  You must enter donations for all final ballot projects
+                </span>
+              </p>
+            )}
+            {donationError.insufficientBalance && (
+              <p
+                data-testid="insufficientBalance"
+                className="rounded-md bg-red-50 py-2 text-pink-500 flex justify-center my-4 text-sm"
+              >
+                <InformationCircleIcon className="w-4 h-4 mr-1 mt-0.5" />
+                <span>You do not have enough funds for these donations</span>
+              </p>
+            )}
+          </div>
+          <PayoutModals />
+        </div>
+        <Footer />
+      </div>
+    </>
   );
 
   function Header(chainId?: string, roundId?: string) {
@@ -153,6 +235,7 @@ export default function ViewBallot() {
                   isProjectAlreadySelected(project.projectRegistryId) > -1
                 }
                 project={project}
+                roundRoutePath={`/round/${chainId}/${roundId}`}
                 key={key}
               />
             );
@@ -165,9 +248,11 @@ export default function ViewBallot() {
   function ShortlistProject(
     props: React.ComponentProps<"div"> & {
       project: Project;
+      roundRoutePath: string;
       isSelected: boolean;
     }
   ) {
+    const { project, roundRoutePath } = props;
     const [, , , handleRemoveProjectsFromShortlist] = useBallot();
 
     return (
@@ -181,15 +266,22 @@ export default function ViewBallot() {
             ${props.isSelected ? "bg-violet-100" : ""}`}
         >
           <div className="flex">
-            <img
-              className="h-[64px]"
-              src={
-                props.project.projectMetadata.logoImg
-                  ? `https://${process.env.REACT_APP_PINATA_GATEWAY}/ipfs/${props.project.projectMetadata.logoImg}`
-                  : DefaultLogoImage
-              }
-              alt={"Project Logo"}
-            />
+            <div className="relative overflow-hidden bg-no-repeat bg-cover  min-w-[64px] w-16 max-h-[64px]">
+              <img
+                  className="inline-block"
+                  src={
+                    props.project.projectMetadata.logoImg
+                        ? `https://${process.env.REACT_APP_PINATA_GATEWAY}/ipfs/${props.project.projectMetadata.logoImg}`
+                        : DefaultLogoImage
+                  }
+                  alt={"Project Logo"}
+              />
+              <div className="min-w-[64px] w-16 max-h-[64px] absolute top-0 right-0 bottom-0 left-0 overflow-hidden bg-fixed opacity-0 hover:opacity-70 transition duration-300 ease-in-out bg-gray-500 justify-center flex items-center">
+                <Link to={`${roundRoutePath}/${project.grantApplicationId}`} >
+                  <EyeIcon className="fill-gray-200 w-6 h-6 cursor-pointer" data-testid={`${project.projectRegistryId}-project-link`}/>
+                </Link>
+              </div>
+            </div>
 
             <div className="pl-4 mt-1">
               <p className="font-semibold mb-2">
@@ -225,7 +317,7 @@ export default function ViewBallot() {
             </p>
           </div>
 
-          <div className="flex justify-center">
+          <div className="flex justify-center mt-11">
             <Link to={"/round/" + chainId + "/" + roundId}>
               <Button
                 $variant="solid"
@@ -244,12 +336,35 @@ export default function ViewBallot() {
   function FinalBallotProjects(finalBallot: Project[]) {
     return (
       <div className="block p-6 rounded-lg shadow-lg bg-white border">
-        <div className="flex justify-between border-b-2 pb-2">
-          <h2 className="mt-2 text-xl">Final Donation</h2>
-          <p className="mt-2 amount-text">Amount / Currency</p>
-          <PayoutTokenDropdown
-            payoutTokenOptions={payoutTokenOptions}
-          />
+        <div className="flex flex-row justify-between border-b-2 pb-2 gap-3">
+          <div className="basis-[28%]">
+            <h2 className="mt-2 text-xl">Final Donation</h2>
+          </div>
+          <div className="lg:flex justify-end lg:flex-row gap-2 basis-[72%] ">
+            <p className="mt-3 text-sm amount-text">Amount</p>
+            <Input
+              aria-label={"Donation amount for all projects "}
+              id={"input-donationamount"}
+              min="0"
+              value={fixedDonation ?? ''}
+              type="number"
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+                setFixedDonation(Number(e.target.value));
+              }}
+              className="w-24"
+            />
+            <PayoutTokenDropdown payoutTokenOptions={payoutTokenOptions} />
+            <Button
+              type="button"
+              $variant="outline"
+              onClick={() => {
+                updateAllDonations(fixedDonation ?? 0);
+              }}
+              className="text-xs px-4 py-2 text-purple-600 border-0"
+            >
+              Apply to all
+            </Button>
+          </div>
         </div>
         <div className="my-4">
           {finalBallot.map((project: Project, key: number) => (
@@ -260,6 +375,7 @@ export default function ViewBallot() {
                 }
                 project={project}
                 index={key}
+                roundRoutePath={`/round/${chainId}/${roundId}`}
               />
             </div>
           ))}
@@ -273,8 +389,10 @@ export default function ViewBallot() {
       project: Project;
       isSelected: boolean;
       index: number;
+      roundRoutePath: string;
     }
   ) {
+    const { project, roundRoutePath } = props;
     const [, , , , , , handleRemoveProjectsFromFinalBallotAndAddToShortlist] = useBallot();
 
     const focusedElement = document?.activeElement?.id;
@@ -290,20 +408,29 @@ export default function ViewBallot() {
             ${props.isSelected ? "bg-violet-100" : ""}`}
         >
           <div className="flex">
-            <img
-              className="h-[64px]"
-              src={
-                props.project.projectMetadata.logoImg
-                  ? `https://${process.env.REACT_APP_PINATA_GATEWAY}/ipfs/${props.project.projectMetadata.logoImg}`
-                  : DefaultLogoImage
-              }
-              alt={"Project Logo"}
-            />
+            <div className="relative overflow-hidden bg-no-repeat bg-cover  min-w-[64px] w-16 max-h-[64px]">
+              <img
+                className="inline-block"
+                src={
+                  props.project.projectMetadata.logoImg
+                      ? `https://${process.env.REACT_APP_PINATA_GATEWAY}/ipfs/${props.project.projectMetadata.logoImg}`
+                      : DefaultLogoImage
+                }
+                alt={"Project Logo"}
+              />
+              <div className="min-w-[64px] w-16 max-h-[64px] absolute top-0 right-0 bottom-0 left-0 overflow-hidden bg-fixed opacity-0 hover:opacity-70 transition duration-300 ease-in-out bg-gray-500 justify-center flex items-center">
+                <Link to={`${roundRoutePath}/${project.grantApplicationId}`} >
+                  <EyeIcon className="fill-gray-200 w-6 h-6 cursor-pointer" data-testid={`${project.projectRegistryId}-project-link`}/>
+                </Link>
+              </div>
+            </div>
 
             <div className="pl-4 mt-1">
-              <p className="font-semibold mb-2">
-                {props.project.projectMetadata.title}
-              </p>
+              <Link to={`${roundRoutePath}/${project.grantApplicationId}`} data-testid={"final-ballot-project-link"}>
+                <p className="font-semibold mb-2">
+                  {props.project.projectMetadata.title}
+                </p>
+              </Link>
               <p className="text-sm">
                 {props.project.projectMetadata.description}
               </p>
@@ -331,7 +458,8 @@ export default function ViewBallot() {
               onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
                 updateDonations(
                   props.project.projectRegistryId,
-                  Number(e.target.value)
+                  Number(e.target.value),
+                  props.project.recipient
                 );
               }}
               className="w-24"
@@ -339,7 +467,16 @@ export default function ViewBallot() {
             <p className="m-auto">{selectedPayoutToken.name}</p>
             <ArrowCircleLeftIcon
               data-testid="remove-from-finalBallot"
-              onClick={() => handleRemoveProjectsFromFinalBallotAndAddToShortlist([props.project])}
+              onClick={() => {
+                handleRemoveProjectsFromFinalBallotAndAddToShortlist([
+                  props.project,
+                ]);
+                updateDonations(
+                  props.project.projectRegistryId,
+                  0,
+                  props.project.recipient
+                )}
+              }
               className="w-6 h-6 m-auto cursor-pointer"
             />
           </div>
@@ -352,19 +489,39 @@ export default function ViewBallot() {
     return (
       <>
         <div className="block p-6 rounded-lg shadow-lg bg-white border border-violet-400">
-          <div className="flex justify-between border-b-2 pb-2">
-            <h2 className="mt-2 text-xl">Final Donation</h2>
-            <p className="mt-2 amount-text">Amount / Currency</p>
-            <PayoutTokenDropdown
-              payoutTokenOptions={payoutTokenOptions}
-            />
+          <div className="flex flex-row justify-between border-b-2 pb-2 gap-3">
+            <div className="basis-[28%]">
+              <h2 className="mt-2 text-xl">Final Donation</h2>
+            </div>
+            <div className="lg:flex justify-end lg:flex-row gap-2 basis-[72%] ">
+              <p className="mt-3 text-sm amount-text">Amount</p>
+              <Input
+                aria-label={"Donation amount for all projects "}
+                id={"input-donationamount"}
+                min="0"
+                value={fixedDonation ?? ''}
+                type="number"
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+                  setFixedDonation(Number(e.target.value));
+                }}
+                className="w-24"
+              />
+              <PayoutTokenDropdown payoutTokenOptions={payoutTokenOptions} />
+              <Button
+                type="button"
+                $variant="outline"
+                className="text-xs px-4 py-2 text-purple-600 border-0"
+              >
+                Apply to all
+              </Button>
+            </div>
           </div>
-        <div className="mt-4">
-          <p className="text-grey-500">
-            Add the projects you want to fund here!
-          </p>
+          <div className="mt-4">
+            <p className="text-grey-500">
+              Add the projects you want to fund here!
+            </p>
+          </div>
         </div>
-      </div>
       </>
     );
   }
@@ -380,7 +537,9 @@ export default function ViewBallot() {
               <span data-testid={"totalDonation"} className="mr-2">
                 {totalDonation}
               </span>
-              <span data-testid={"summaryPayoutToken"}>{selectedPayoutToken.name}</span>
+              <span data-testid={"summaryPayoutToken"}>
+                {selectedPayoutToken.name}
+              </span>
             </p>
           </div>
         </div>
@@ -398,7 +557,10 @@ export default function ViewBallot() {
 
   function FinalBallotConfirmCount() {
     return (
-      <div className="flex justify-center" data-testid="final-ballot-project-count">
+      <div
+        className="flex justify-center"
+        data-testid="final-ballot-project-count"
+      >
         <CheckIcon
           className="bg-teal-400 text-grey-500 rounded-full h-6 w-6 p-1 mr-2"
           aria-hidden="true"
@@ -426,7 +588,8 @@ export default function ViewBallot() {
   }
 
   function SelectActive(props: { onClick: () => void }) {
-    const [, , , , handleAddProjectsToFinalBallotAndRemoveFromShortlist] = useBallot();
+    const [, , , , handleAddProjectsToFinalBallotAndRemoveFromShortlist] =
+      useBallot();
     return (
       <Button
         type="button"
@@ -438,7 +601,9 @@ export default function ViewBallot() {
         {selected.length > 0 ? (
           <div
             data-testid="move-to-finalBallot"
-            onClick={async () => handleAddProjectsToFinalBallotAndRemoveFromShortlist(selected)}
+            onClick={async () =>
+              handleAddProjectsToFinalBallotAndRemoveFromShortlist(selected)
+            }
           >
             Add selected ({selected.length}) to Final Donation
           </div>
@@ -477,35 +642,45 @@ export default function ViewBallot() {
     );
   }
 
-  function updateDonations(projectRegistryId: string, amount: number) {
+  function updateDonations(
+    projectRegistryId: string,
+    amount: number,
+    projectAddress: recipient
+  ) {
     const projectIndex = donations.findIndex(
       (donation) => donation.projectRegistryId === projectRegistryId
     );
 
-    const newState = donations;
+    const newState = [...donations];
 
     if (projectIndex !== -1) {
       newState[projectIndex].amount = amount;
     } else {
       newState.push({
-        projectRegistryId: projectRegistryId,
-        amount: amount,
+        projectRegistryId,
+        amount,
+        projectAddress,
       });
     }
 
     setDonations(newState);
-
-    setTotalDonation(
-      donations.reduce((sum, donation) => sum + donation.amount, 0)
-    );
   }
 
-  function PayoutTokenDropdown(props: {
-    payoutTokenOptions: PayoutToken[];
-  }) {
+  function updateAllDonations(amount: number) {
+    const newDonations = finalBallot.map((project) => {
+      return {
+        projectRegistryId: project.projectRegistryId,
+        amount,
+        projectAddress: project.recipient,
+      } as FinalBallotDonation;
+    });
 
+    setDonations(newDonations);
+  }
+
+  function PayoutTokenDropdown(props: { payoutTokenOptions: PayoutToken[] }) {
     return (
-      <div className="relative col-span-6 sm:col-span-3">
+      <div className="mt-1 relative col-span-6 sm:col-span-3">
         <Listbox value={selectedPayoutToken} onChange={setSelectedPayoutToken}>
           {({ open }) => (
             <div>
@@ -551,7 +726,9 @@ export default function ViewBallot() {
                                   ) : null}
                                   <span
                                     className={classNames(
-                                      selected ? "font-semibold" : "font-normal",
+                                      selected
+                                        ? "font-semibold"
+                                        : "font-normal",
                                       "ml-3 block truncate"
                                     )}
                                   >
@@ -580,7 +757,6 @@ export default function ViewBallot() {
                   </Listbox.Options>
                 </Transition>
               </div>
-
             </div>
           )}
         </Listbox>
@@ -588,9 +764,7 @@ export default function ViewBallot() {
     );
   }
 
-  function PayoutTokenButton(props: {
-    token?: PayoutToken;
-  }) {
+  function PayoutTokenButton(props: { token?: PayoutToken }) {
     const { token } = props;
     return (
       <Listbox.Button
@@ -621,14 +795,15 @@ export default function ViewBallot() {
   }
 
   function handleConfirmation() {
-
     const newState = {
       emptyInput: false,
-      insufficientBalance: false
-    }
+      insufficientBalance: false,
+    };
 
     // check to ensure all projects have donation amount
-    const emptyDonations = donations.filter(donation =>  !donation.amount || donation.amount == 0);
+    const emptyDonations = donations.filter(
+      (donation) => !donation.amount || donation.amount == 0
+    );
 
     if (donations.length == 0 || emptyDonations.length > 0) {
       newState.emptyInput = true;
@@ -638,14 +813,20 @@ export default function ViewBallot() {
       setDonationError(newState);
     }
 
+    // check if wallet is connected
+    if (!address) {
+      openConnectModal && openConnectModal();
+      return;
+    }
+
     // check if signer has enough token balance
     const accountBalance = selectedPayoutTokenBalance.data?.value;
-    const tokenBalance = ethers.utils.parseUnits(totalDonation.toString(), selectedPayoutToken.decimal);
+    const tokenBalance = ethers.utils.parseUnits(
+      totalDonation.toString(),
+      selectedPayoutToken.decimal
+    );
 
-    if (
-      !accountBalance ||
-      BigNumber.from(tokenBalance).gt(accountBalance)
-    ) {
+    if (!accountBalance || BigNumber.from(tokenBalance).gt(accountBalance)) {
       newState.insufficientBalance = true;
       setDonationError(newState);
       return;
@@ -658,57 +839,98 @@ export default function ViewBallot() {
 
   function PayoutModals() {
     return (
-        <>
-          <ConfirmationModal
-            title={"Confirm Decision"}
-            confirmButtonText={"Confirm"}
-            confirmButtonAction={() => {
-              setOpenInfoModal(true);
-              setOpenConfirmationModal(false);
-            }}
-            body={<ConfirmationModalBody />}
-            isOpen={openConfirmationModal}
-            setIsOpen={setOpenConfirmationModal}
-          />
-            <InfoModal
-                title={"Heads up!"}
-                body={<InfoModalBody />}
-                isOpen={openInfoModal}
-                setIsOpen={setOpenInfoModal}
-                // eslint-disable-next-line @typescript-eslint/no-empty-function
-                continueButtonAction={() => {}} // TODO: Wire this up to payouts
-            />
-        </>
+      <>
+        <ConfirmationModal
+          title={"Confirm Decision"}
+          confirmButtonText={"Confirm"}
+          confirmButtonAction={() => {
+            setOpenInfoModal(true);
+            setOpenConfirmationModal(false);
+          }}
+          body={<ConfirmationModalBody />}
+          isOpen={openConfirmationModal}
+          setIsOpen={setOpenConfirmationModal}
+        />
+        <InfoModal
+          title={"Heads up!"}
+          body={<InfoModalBody />}
+          isOpen={openInfoModal}
+          setIsOpen={setOpenInfoModal}
+          continueButtonAction={handleSubmitDonation}
+        />
+        <ProgressModal
+          isOpen={openProgressModal}
+          subheading={"Please hold while we submit your donation."}
+          steps={progressSteps}
+        />
+        <ErrorModal
+          isOpen={openErrorModal}
+          setIsOpen={setOpenErrorModal}
+          tryAgainFn={handleSubmitDonation}
+        />
+      </>
     );
   }
 
   function InfoModalBody() {
     return (
-        <div className="text-sm text-grey-400 gap-16">
-          <p className="text-sm">
-            Submitting your donation will require signing two transactions:
-          </p>
-          <ul className="list-disc list-inside pl-3 pt-3">
-            <li>Approving the contract to access your wallet</li>
-            <li>Approving the transaction</li>
-          </ul>
-        </div>
+      <div className="text-sm text-grey-400 gap-16">
+        <p className="text-sm">
+          Submitting your donation will require signing two transactions:
+        </p>
+        <ul className="list-disc list-inside pl-3 pt-3">
+          <li>Approving the contract to access your wallet</li>
+          <li>Approving the transaction</li>
+        </ul>
+      </div>
     );
   }
 
   function ConfirmationModalBody() {
-    const projectsCount =  finalBallot.length;
+    const projectsCount = finalBallot.length;
     return (
-        <>
-          <p className="text-sm text-grey-400">
-            {projectsCount} project{projectsCount   > 1 && "s"} on your Final Donation.
-          </p>
-          <div className="my-8">
-            <FinalBallotConfirmCount/>
-          </div>
-          <AdditionalGasFeesNote/>
-        </>
+      <>
+        <p className="text-sm text-grey-400">
+          {projectsCount} project{projectsCount > 1 && "s"} on your Final
+          Donation.
+        </p>
+        <div className="my-8">
+          <FinalBallotConfirmCount />
+        </div>
+        <AdditionalGasFeesNote />
+      </>
     );
   }
 
+  async function handleSubmitDonation() {
+    try {
+      if (!round || !roundId) {
+        throw new Error("round is null");
+      }
+
+      setTimeout(() => {
+        setOpenProgressModal(true);
+        setOpenInfoModal(false);
+      }, modalDelayMs);
+
+      const txHash = await submitDonations({
+        roundId: roundId,
+        donations: donations,
+        donationToken: selectedPayoutToken,
+        totalDonation: totalDonation,
+        votingStrategy: round.votingStrategy,
+      });
+
+      setTimeout(() => {
+        setOpenProgressModal(false);
+        navigate(`/round/${chainId}/${roundId}/${txHash}/thankyou`);
+      }, modalDelayMs);
+
+    } catch (error) {
+      datadogLogs.logger.error(
+        `error: handleSubmitDonation - ${error}, id: ${roundId}`
+      );
+      console.error(error);
+    }
+  }
 }

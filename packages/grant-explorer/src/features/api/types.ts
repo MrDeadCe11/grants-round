@@ -57,6 +57,10 @@ export interface Contract {
    * Contract ABI in Human Readable ABI format
    */
   abi: Array<string>;
+  /**
+   * Contract ABI in binary format
+   */
+  bytecode?: string;
 }
 
 // TODO: Document this
@@ -145,12 +149,17 @@ export type recipient = string;
 export type FinalBallotDonation = {
   projectRegistryId: ProjectRegistryId,
   amount: number;
+  projectAddress: recipient;
 }
 
 export enum ApplicationStatus {
   PENDING = "PENDING",
   APPROVED = "APPROVED",
   REJECTED = "REJECTED",
+}
+
+interface ProjectOwner {
+  address: string;
 }
 
 export type ProjectMetadata = {
@@ -163,13 +172,12 @@ export type ProjectMetadata = {
   userGithub?: string;
   projectGithub?: string;
   credentials?: ProjectCredentials;
+  owners: ProjectOwner[];
 };
 
 export type ProjectCredentials = {
-  github?: VerifiableCredential;
-  twitter?: VerifiableCredential;
+  [key: string]: VerifiableCredential;
 };
-
 export enum ProgressStatus {
   IS_SUCCESS = "IS_SUCCESS",
   IN_PROGRESS = "IN_PROGRESS",
@@ -183,5 +191,5 @@ export type PayoutToken = {
   address: string;
   decimal: number;
   logo?: string;
-  default?: boolean;
+  default?: boolean; // TODO: this is only used to provide the initial placeholder item, look for better solution
 };
