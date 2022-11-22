@@ -5,7 +5,7 @@ This package serves the app which holds all the features w.r.t to
 - exploring a round
 - voting for a project
 
-This package is meant to be used by the users who would wnat to explore rounds and contribute to the projects within a round
+This package is meant to be used by the users who would want to explore rounds and contribute to the projects within a round
 It relies on the contracts deployed from the [contracts](../contracts) package.
 Indexed data can be queried by the graphs deployed from the [graph](../graph) package.
 
